@@ -3,6 +3,11 @@ import sqlite3
 import subprocess
 import sys
 
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
 
 def test_upgrade_downgrade_upgrade(tmp_path):
     path = tmp_path / "migration.db"
@@ -30,6 +35,20 @@ def test_upgrade_downgrade_upgrade(tmp_path):
         }
         trades = [row[1] for row in connection.execute("PRAGMA table_info(card_trades)")]
         assert "counter_of" in trades
+
+    # A fully migrated database must pass the actual readiness handler, not only
+    # schema inspection. Otherwise a new migration can leave /ready pinned behind.
+    from app.main import ready
+
+    engine = create_engine(f"sqlite:///{path}")
+    with Session(engine) as session:
+        assert ready(session)["status"] == "ready"
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE alembic_version SET version_num='20260930_0006'")
+    with Session(engine) as session, pytest.raises(HTTPException) as error:
+        ready(session)
+    assert error.value.status_code == 503
+    engine.dispose()
 
 
 def test_auth_migration_preserves_legacy_wallet(tmp_path):
